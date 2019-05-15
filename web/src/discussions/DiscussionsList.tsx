@@ -9,7 +9,10 @@ import { Timestamp } from '../components/time/Timestamp'
 import { fetchDiscussionThreads } from './backend'
 
 interface DiscussionNodeProps {
-    node: Pick<GQL.IDiscussionThread, 'id' | 'title' | 'author' | 'inlineURL' | 'comments' | 'createdAt' | 'targets'>
+    node: Pick<
+        GQL.IDiscussionThread,
+        'idWithoutKind' | 'title' | 'author' | 'inlineURL' | 'comments' | 'createdAt' | 'targets'
+    >
     location: H.Location
     withRepo?: boolean
 }
@@ -36,7 +39,7 @@ const DiscussionNode: React.FunctionComponent<DiscussionNodeProps> = ({ node, lo
                 </Link>
             </div>
             <div className="text-muted">
-                #{node.id} created <Timestamp date={node.createdAt} /> by{' '}
+                #{node.idWithoutKind} created <Timestamp date={node.createdAt} /> by{' '}
                 <Link to={`/users/${node.author.username}`} data-tooltip={node.author.displayName}>
                     {node.author.username}
                 </Link>{' '}
