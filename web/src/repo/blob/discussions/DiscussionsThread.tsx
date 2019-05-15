@@ -87,7 +87,13 @@ export class DiscussionsThread extends React.PureComponent<Props, State> {
         // If the thread is loaded, ensure that the URL hash is updated to
         // reflect the line that the discussion was created on.
         if (thread) {
-            const desiredHash = this.urlHashWithLine(thread, commentID)
+            // TODO(sqs): support multiple thread targets
+            const target =
+                thread.targets && thread.targets.nodes && thread.targets.nodes.length > 0
+                    ? thread.targets.nodes[0]
+                    : undefined
+
+            const desiredHash = this.urlHashWithLine(thread, target, commentID)
             if (!hashesEqual(desiredHash, location.hash)) {
                 const discussionURL = location.pathname + location.search + desiredHash
                 return <Redirect to={discussionURL} />
@@ -135,7 +141,11 @@ export class DiscussionsThread extends React.PureComponent<Props, State> {
      * line that it was created on.
      * @param thread The thread to link to.
      */
-    private urlHashWithLine(thread: GQL.IDiscussionThread, commentID?: GQL.ID): string {
+    private urlHashWithLine(
+        thread: Pick<GQL.IDiscussionThread, 'id'>,
+        target: Pick<GQL.IDiscussionThreadTargetRepo, '__typename' | 'selection'> | undefined,
+        commentID?: GQL.ID
+    ): string {
         const hash = new URLSearchParams()
         hash.set('tab', 'discussions')
         hash.set('threadID', thread.id)
@@ -143,20 +153,18 @@ export class DiscussionsThread extends React.PureComponent<Props, State> {
             hash.set('commentID', commentID)
         }
 
-        return thread.target &&
-            thread.target.__typename === 'DiscussionThreadTargetRepo' &&
-            thread.target.selection !== null
+        return target && target.__typename === 'DiscussionThreadTargetRepo' && target.selection !== null
             ? formatHash(
                   {
-                      line: thread.target.selection.startLine + 1,
-                      character: thread.target.selection.startCharacter,
+                      line: target.selection.startLine + 1,
+                      character: target.selection.startCharacter,
                       endLine:
                           // The 0th character means the selection ended at the end of the previous
                           // line.
-                          (thread.target.selection.endCharacter === 0
-                              ? thread.target.selection.endLine - 1
-                              : thread.target.selection.endLine) + 1,
-                      endCharacter: thread.target.selection.endCharacter,
+                          (target.selection.endCharacter === 0
+                              ? target.selection.endLine - 1
+                              : target.selection.endLine) + 1,
+                      endCharacter: target.selection.endCharacter,
                   },
                   hash
               )

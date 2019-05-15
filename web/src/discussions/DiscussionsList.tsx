@@ -9,7 +9,7 @@ import { Timestamp } from '../components/time/Timestamp'
 import { fetchDiscussionThreads } from './backend'
 
 interface DiscussionNodeProps {
-    node: GQL.IDiscussionThread
+    node: Pick<GQL.IDiscussionThread, 'id' | 'title' | 'author' | 'inlineURL' | 'comments' | 'createdAt' | 'targets'>
     location: H.Location
     withRepo?: boolean
 }
@@ -19,6 +19,10 @@ const DiscussionNode: React.FunctionComponent<DiscussionNodeProps> = ({ node, lo
 
     // TODO(slimsag:discussions): future: Improve rendering of discussions when there is no inline URL
     const inlineURL = node.inlineURL || ''
+
+    // TODO(sqs): support linking to multiple targets
+    const target =
+        node.targets && node.targets.nodes && node.targets.nodes.length > 0 ? node.targets.nodes[0] : undefined
 
     return (
         <li className={'discussions-list__row' + (currentURL === inlineURL ? ' discussions-list__row--active' : '')}>
@@ -36,9 +40,9 @@ const DiscussionNode: React.FunctionComponent<DiscussionNodeProps> = ({ node, lo
                 <Link to={`/users/${node.author.username}`} data-tooltip={node.author.displayName}>
                     {node.author.username}
                 </Link>{' '}
-                {node.target && node.target.__typename === 'DiscussionThreadTargetRepo' && withRepo && (
+                {target && target.__typename == 'DiscussionThreadTargetRepo' && withRepo && (
                     <>
-                        in <Link to={node.target.repository.name}>{node.target.repository.name}</Link>
+                        in <Link to={target.repository.name}>{target.repository.name}</Link>
                     </>
                 )}
             </div>
@@ -47,7 +51,7 @@ const DiscussionNode: React.FunctionComponent<DiscussionNodeProps> = ({ node, lo
 }
 
 class FilteredDiscussionsConnection extends FilteredConnection<
-    GQL.IDiscussionThread,
+    DiscussionNodeProps['node'],
     Pick<DiscussionNodeProps, 'location'>
 > {}
 
