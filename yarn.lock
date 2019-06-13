@@ -1534,8 +1534,7 @@
   integrity sha512-Te7F1RQJLBH4C8wQ2xz0nPC2vpe13F80V+Yv+c3GySOoh4DcLNN4P5u51Kh4aZPqeS5DJ7CKvHyX2SM/1EBXNg==
 
 "@sourcegraph/extension-api-types@link:packages/@sourcegraph/extension-api-types":
-  version "0.0.0"
-  uid ""
+  version "2.0.0"
 
 "@sourcegraph/prettierrc@^3.0.1":
   version "3.0.1"
@@ -2461,10 +2460,10 @@
   resolved "https://registry.npmjs.org/@types/range-parser/-/range-parser-1.2.2.tgz#fa8e1ad1d474688a757140c91de6dace6f4abc8d"
   integrity sha512-HtKGu+qG1NPvYe1z7ezLsyIaXYyi8SoAVqWDZgDQ8dLrsZvSzUNCwZyfX33uhWxL/SU0ZDQZ3nwZ0nimt507Kw==
 
-"@types/react-circular-progressbar@1.0.1":
-  version "1.0.1"
-  resolved "https://registry.npmjs.org/@types/react-circular-progressbar/-/react-circular-progressbar-1.0.1.tgz#79ec9bc3a6f44e0f1f825963765dadca39839f51"
-  integrity sha512-Pjms8GK01hKXhY1ASoJmc/Sx559UhQgTlvbUri4OT32seMtSnwqgMSSxu4XS/B7cq1W8HPNBwrlr08gneEWOFw==
+"@types/react-circular-progressbar@1.0.2":
+  version "1.0.2"
+  resolved "https://registry.npmjs.org/@types/react-circular-progressbar/-/react-circular-progressbar-1.0.2.tgz#a23e2d0f4e14a89d75c7c2286f8e96702f9862f2"
+  integrity sha512-lFRfduBnlr7HhjI64fMI0Jm3uDYMbdYyTF3sCZ7aNLYmjPOM3L2+/BzKOfRzRITinOL1jA9lbenGASqowULgEw==
   dependencies:
     "@types/react" "*"
 
@@ -12097,12 +12096,10 @@ react-addons-create-fragment@^15.6.2:
     loose-envify "^1.3.1"
     object-assign "^4.1.0"
 
-react-circular-progressbar@^1.0.0:
-  version "1.0.0"
-  resolved "https://registry.npmjs.org/react-circular-progressbar/-/react-circular-progressbar-1.0.0.tgz#0d2a6c07c9f14fcafca4510f27829e4276dee3e0"
-  integrity sha512-6QOqwsYJCeFDPYTparTS3FdFGlSItafJWD8BloLG3k1sW8ZG7JGdHo7FQsqtGEIK0bldwTO9v+nD2nEYAU1OYg==
-  dependencies:
-    prop-types "^15.5.10"
+react-circular-progressbar@^1.2.1:
+  version "1.2.1"
+  resolved "https://registry.npmjs.org/react-circular-progressbar/-/react-circular-progressbar-1.2.1.tgz#76843292e310683c5981480069ed6b4bbf1d96f9"
+  integrity sha512-vfxCdyveCMbpKrfs+vdLqS2a4hv/h5DL1katSVVip9LVDRNtQtrNvxiMVZDPrkZPDQREBubyFZZ7basNhXWK+A==
 
 react-clientside-effect@^1.2.0:
   version "1.2.0"
@@ -13677,8 +13674,7 @@ source-map@^0.7.2, source-map@^0.7.3:
   integrity sha512-CkCj6giN3S+n9qrYiBTX5gystlENnRW5jZeNLHpe6aue+SrHcG5VYwujhW9s4dY31mEGsxBDrHR6oI69fTXsaQ==
 
 "sourcegraph@link:packages/sourcegraph-extension-api":
-  version "0.0.0"
-  uid ""
+  version "23.0.1"
 
 space-separated-tokens@^1.0.0:
   version "1.1.2"
