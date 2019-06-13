@@ -266,17 +266,17 @@ func (sr *searchResultsResolver) DynamicFilters() []*searchFilterResolver {
 	}
 
 	for _, result := range sr.results {
-		if result.fileMatch != nil {
+		if fm := result.fileMatchLike(); fm != nil {
 			rev := ""
-			if result.fileMatch.inputRev != nil {
-				rev = *result.fileMatch.inputRev
+			if fm.inputRev != nil {
+				rev = *fm.inputRev
 			}
-			addRepoFilter(string(result.fileMatch.repo.Name), rev, len(result.fileMatch.LineMatches()))
-			addLangFilter(result.fileMatch.JPath, len(result.fileMatch.LineMatches()), result.fileMatch.JLimitHit)
-			addFileFilter(result.fileMatch.JPath, len(result.fileMatch.LineMatches()), result.fileMatch.JLimitHit)
+			addRepoFilter(string(fm.repo.Name), rev, len(fm.LineMatches()))
+			addLangFilter(fm.JPath, len(fm.LineMatches()), fm.JLimitHit)
+			addFileFilter(fm.JPath, len(fm.LineMatches()), fm.JLimitHit)
 
-			if len(result.fileMatch.symbols) > 0 {
-				add("type:symbol", "type:symbol", 1, result.fileMatch.JLimitHit, "symbol")
+			if len(fm.symbols) > 0 {
+				add("type:symbol", "type:symbol", 1, fm.JLimitHit, "symbol")
 			}
 		}
 
@@ -806,6 +806,8 @@ func (r *searchResolver) doResults(ctx context.Context, forceOnlyResultType stri
 	var resultTypes []string
 	if forceOnlyResultType != "" {
 		resultTypes = []string{forceOnlyResultType}
+	} else if len(r.query.Values(query.FieldReplace)) > 0 {
+		resultTypes = []string{"codemod"}
 	} else {
 		resultTypes, _ = r.query.StringValues(query.FieldType)
 		if len(resultTypes) == 0 {
@@ -1000,6 +1002,30 @@ func (r *searchResolver) doResults(ctx context.Context, forceOnlyResultType stri
 					commonMu.Unlock()
 				}
 			})
+		case "codemod":
+			wg := waitGroup(true)
+			wg.Add(1)
+			goroutine.Go(func() {
+				defer wg.Done()
+
+				codemodResults, codemodCommon, err := callCodemod(ctx, &args)
+				// Timeouts are reported through searchResultsCommon so don't report an error for them
+				if err != nil && !isContextError(ctx, err) {
+					multiErrMu.Lock()
+					multiErr = multierror.Append(multiErr, errors.Wrap(err, "codemod search failed"))
+					multiErrMu.Unlock()
+				}
+				if codemodResults != nil {
+					resultsMu.Lock()
+					results = append(results, codemodResults...)
+					resultsMu.Unlock()
+				}
+				if codemodCommon != nil {
+					commonMu.Lock()
+					common.update(*codemodCommon)
+					commonMu.Unlock()
+				}
+			})
 		}
 	}
 
@@ -1058,12 +1084,31 @@ type searchResultResolver struct {
 	repo      *repositoryResolver         // repo name match
 	fileMatch *fileMatchResolver          // text match
 	diff      *commitSearchResultResolver // diff or commit match
+
+	codemod *codemodResultResolver // codemod match (and replacement, if any)
+}
+
+// fileMatchLike returns r's fileMatch or, if possible, the equivalent fileMatch of its actual
+// result type. It is used by callers that want to analyze this result (e.g., a codemod result) as
+// though it were a fileMatch.
+func (r *searchResultResolver) fileMatchLike() *fileMatchResolver {
+	switch {
+	case r.fileMatch != nil:
+		return r.fileMatch
+	case r.codemod != nil:
+		return &fileMatchResolver{
+			JPath: r.codemod.path,
+			uri:   r.codemod.fileURL,
+			repo:  r.codemod.commit.repo.repo,
+		}
+	}
+	return nil
 }
 
 // getSearchResultURIs returns the repo name and file uri respectiveley
 func getSearchResultURIs(c *searchResultResolver) (string, string) {
-	if c.fileMatch != nil {
-		return string(c.fileMatch.repo.Name), c.fileMatch.JPath
+	if fm := c.fileMatchLike(); fm != nil {
+		return string(fm.repo.Name), fm.JPath
 	}
 	if c.repo != nil {
 		return string(c.repo.repo.Name), ""
@@ -1101,6 +1146,9 @@ func (g *searchResultResolver) ToFileMatch() (*fileMatchResolver, bool) {
 func (g *searchResultResolver) ToCommitSearchResult() (*commitSearchResultResolver, bool) {
 	return g.diff, g.diff != nil
 }
+func (g *searchResultResolver) ToCodemodResult() (*codemodResultResolver, bool) {
+	return g.codemod, g.codemod != nil
+}
 
 func (g *searchResultResolver) resultCount() int32 {
 	switch {
@@ -1111,6 +1159,8 @@ func (g *searchResultResolver) resultCount() int32 {
 		return 1 // 1 to count "empty" results like type:path results
 	case g.diff != nil:
 		return 1
+	case g.codemod != nil:
+		return int32(len(g.codemod.matches))
 	default:
 		return 1
 	}
