@@ -265,7 +265,7 @@ describe('code_intelligence', () => {
                     render: RENDER,
                 })
             )
-            const editors = await from(services.editor.editors)
+            const editors = await from(services.editor.editorsAndModels)
                 .pipe(
                     skip(1),
                     take(1)
@@ -578,7 +578,7 @@ describe('code_intelligence', () => {
                     render: RENDER,
                 })
             )
-            let editors = await from(services.editor.editors)
+            let editors = await from(services.editor.editorsAndModels)
                 .pipe(
                     skip(2),
                     take(1)
@@ -614,7 +614,7 @@ describe('code_intelligence', () => {
             // Simulate codeView1 removal
             mutations.next([{ addedNodes: [], removedNodes: [codeView1] }])
             // One editor should have been removed, model should still exist
-            editors = await from(services.editor.editors)
+            editors = await from(services.editor.editorsAndModels)
                 .pipe(
                     skip(1),
                     take(1)
@@ -638,7 +638,7 @@ describe('code_intelligence', () => {
             // Simulate codeView2 removal
             mutations.next([{ addedNodes: [], removedNodes: [codeView2] }])
             // Second editor and model should have been removed
-            editors = await from(services.editor.editors)
+            editors = await from(services.editor.editorsAndModels)
                 .pipe(
                     skip(1),
                     take(1)
