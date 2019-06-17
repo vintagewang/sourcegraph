@@ -86,13 +86,13 @@ func main() {
 			panic(err)
 		}
 
-		onlyDocsChange := true
-		for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-			if !strings.HasPrefix(line, "doc") && line != "CHANGELOG.md" {
-				onlyDocsChange = false
-				break
-			}
-		}
+		// onlyDocsChange := true
+		// for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		// 	if !strings.HasPrefix(line, "doc") && line != "CHANGELOG.md" {
+		// 		onlyDocsChange = false
+		// 		break
+		// 	}
+		// }
 
 		// if onlyDocsChange {
 		// 	pipeline.AddStep(":memo:",
