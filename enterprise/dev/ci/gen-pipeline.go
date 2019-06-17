@@ -94,12 +94,12 @@ func main() {
 			}
 		}
 
-		if onlyDocsChange {
-			pipeline.AddStep(":memo:",
-				bk.Cmd("./dev/ci/yarn-run.sh prettier-check"),
-				bk.Cmd("./dev/check/docsite.sh"))
-			return
-		}
+		// if onlyDocsChange {
+		// 	pipeline.AddStep(":memo:",
+		// 		bk.Cmd("./dev/ci/yarn-run.sh prettier-check"),
+		// 		bk.Cmd("./dev/check/docsite.sh"))
+		// 	return
+		// }
 	}
 
 	// if !isBextReleaseBranch {
@@ -115,8 +115,8 @@ func main() {
 	// 		bk.Cmd("./dev/check/all.sh"))
 	// }
 
-	pipeline.AddStep(":lipstick: :lint-roller: :stylelint: :typescript: :graphql:",
-		bk.Cmd("dev/ci/yarn-run.sh prettier-check all:tslint all:stylelint all:typecheck graphql-lint"))
+	// pipeline.AddStep(":lipstick: :lint-roller: :stylelint: :typescript: :graphql:",
+	// 	bk.Cmd("dev/ci/yarn-run.sh prettier-check all:tslint all:stylelint all:typecheck graphql-lint"))
 
 	// // Browser extension build
 	// pipeline.AddStep(":webpack::chrome:",
