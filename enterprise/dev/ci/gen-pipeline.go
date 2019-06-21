@@ -107,16 +107,179 @@ func (c config) generate() (*bk.Pipeline, error) {
 			}
 		}
 
+		// Only docs change (short circuit)
 		if onlyDocsChange {
 			pipeline.AddStep(":memo:",
 				bk.Cmd("./dev/ci/yarn-run.sh prettier-check"),
 				bk.Cmd("./dev/check/docsite.sh"))
 			return
 		}
+
+		// Build Sourcegraph Server Docker image
+		if !c.isBextReleaseBranch {
+			pipeline.AddStep(":docker:",
+				bk.Cmd("pushd enterprise"),
+				bk.Cmd("./cmd/server/pre-build.sh"),
+				bk.Env("IMAGE", "sourcegraph/server:"+version+"_candidate"),
+				bk.Env("VERSION", version),
+				bk.Cmd("./cmd/server/build.sh"),
+				bk.Cmd("popd"))
+
+			pipeline.AddStep(":white_check_mark:",
+				bk.Cmd("./dev/check/all.sh"))
+		}
+
+		// Lint checks
+		pipeline.AddStep(":lipstick: :lint-roller: :stylelint: :typescript: :graphql:",
+			bk.Cmd("dev/ci/yarn-run.sh prettier-check all:tslint-eslint all:stylelint all:typecheck graphql-lint"))
+
+		// Browser extension build
+		pipeline.AddStep(":webpack::chrome:",
+			bk.Cmd("dev/ci/yarn-build.sh browser"))
+
+		if !isBextReleaseBranch {
+			// Webapp build
+			pipeline.AddStep(":webpack::globe_with_meridians:",
+				bk.Cmd("dev/ci/yarn-build.sh web"),
+				bk.Env("NODE_ENV", "production"),
+				bk.Env("ENTERPRISE", "0"))
+
+			// Webapp enterprise build
+			pipeline.AddStep(":webpack::globe_with_meridians::moneybag:",
+				bk.Cmd("dev/ci/yarn-build.sh web"),
+				bk.Env("NODE_ENV", "production"),
+				bk.Env("ENTERPRISE", "1"))
+
+			// Webapp tests
+			pipeline.AddStep(":jest::globe_with_meridians:",
+				bk.Cmd("dev/ci/yarn-test.sh web"),
+				bk.ArtifactPaths("web/coverage/coverage-final.json"))
+		}
+
+		// Browser extension tests
+		pipeline.AddStep(":jest::chrome:",
+			bk.Cmd("dev/ci/yarn-test.sh browser"),
+			bk.ArtifactPaths("browser/coverage/coverage-final.json"))
+
+		// Shared tests
+		pipeline.AddStep(":jest:",
+			bk.Cmd("dev/ci/yarn-test.sh shared"),
+			bk.ArtifactPaths("shared/coverage/coverage-final.json"))
+
+		// Storybook
+		pipeline.AddStep(":storybook:", bk.Cmd("dev/ci/yarn-run.sh storybook:smoke-test"))
+
+		if !isBextReleaseBranch {
+			pipeline.AddStep(":postgres:",
+				bk.Cmd("./dev/ci/ci-db-backcompat.sh"))
+
+			pipeline.AddStep(":go:",
+				bk.Cmd("./cmd/symbols/build.sh buildLibsqlite3Pcre"), // for symbols tests
+				bk.Cmd("go test -timeout 4m -coverprofile=coverage.txt -covermode=atomic -race ./..."),
+				bk.ArtifactPaths("coverage.txt"))
+
+			pipeline.AddStep(":go:",
+				bk.Cmd("go generate ./..."),
+				bk.Cmd("go install -tags dist ./cmd/... ./enterprise/cmd/..."),
+			)
+
+			pipeline.AddStep(":docker:",
+				bk.Cmd("curl -sL -o hadolint \"https://github.com/hadolint/hadolint/releases/download/v1.15.0/hadolint-$(uname -s)-$(uname -m)\" && chmod 700 hadolint"),
+				bk.Cmd("git ls-files | grep Dockerfile | xargs ./hadolint"))
+		}
+
+		pipeline.AddWait()
+
+		if !isBextReleaseBranch {
+			pipeline.AddStep(":chromium:",
+				// Avoid crashing the sourcegraph/server containers. See
+				// https://github.com/sourcegraph/sourcegraph/issues/2657
+				bk.ConcurrencyGroup("e2e"),
+				bk.Concurrency(1),
+
+				bk.Env("IMAGE", "sourcegraph/server:"+version+"_candidate"),
+				bk.Env("VERSION", version),
+				bk.Env("PUPPETEER_SKIP_CHROMIUM_DOWNLOAD", ""),
+				bk.Cmd("./dev/ci/e2e.sh"),
+				bk.ArtifactPaths("./puppeteer/*.png;./web/e2e.mp4;./web/ffmpeg.log"))
+		}
+
+		pipeline.AddWait()
+
+		pipeline.AddStep(":codecov:",
+			bk.Cmd("buildkite-agent artifact download 'coverage.txt' . || true"), // ignore error when no report exists
+			bk.Cmd("buildkite-agent artifact download '*/coverage-final.json' . || true"),
+			bk.Cmd("bash <(curl -s https://codecov.io/bash) -X gcov -X coveragepy -X xcode"))
+
+	}
+
+	if strings.HasPrefix(branch, "docker-images-patch-notest/") {
+		version = version + "_patch"
+		c.addDockerImageStep(pipeline, branch[27:], false)
+		return
 	}
 
 	// TODO(2): write this
 	// TODO(3): break generate out
+}
+
+func (c config) addDockerImageStep(pipeline *bk.Pipeline, app string, insiders bool) {
+	cmds := []bk.StepOpt{
+		bk.Cmd(fmt.Sprintf(`echo "Building %s..."`, app)),
+	}
+
+	cmdDir := "cmd/" + app
+	if _, err := os.Stat(filepath.Join("enterprise", cmdDir)); err != nil {
+		fmt.Fprintf(os.Stderr, "github.com/sourcegraph/sourcegraph/enterprise/cmd/%s does not exist so building github.com/sourcegraph/sourcegraph/cmd/%s instead\n", app, app)
+	} else {
+		cmds = append(cmds, bk.Cmd("pushd enterprise"))
+	}
+
+	preBuildScript := cmdDir + "/pre-build.sh"
+	if _, err := os.Stat(preBuildScript); err == nil {
+		cmds = append(cmds, bk.Cmd(preBuildScript))
+	}
+
+	image := "sourcegraph/" + app
+
+	getBuildScript := func() string {
+		buildScriptByApp := map[string]string{
+			"symbols": "env BUILD_TYPE=dist ./cmd/symbols/build.sh buildSymbolsDockerImage",
+			// The server image was built prior to e2e tests in a previous step.
+			"server": fmt.Sprintf("docker tag %s:%s_candidate %s:%s", image, version, image, version),
+		}
+		if buildScript, ok := buildScriptByApp[app]; ok {
+			return buildScript
+		}
+		return cmdDir + "/build.sh"
+	}
+
+	cmds = append(cmds,
+		bk.Env("IMAGE", image+":"+version),
+		bk.Env("VERSION", version),
+		bk.Cmd(getBuildScript()),
+	)
+
+	if app != "server" || taggedRelease {
+		cmds = append(cmds,
+			bk.Cmd(fmt.Sprintf("docker push %s:%s", image, version)),
+		)
+	}
+
+	if app == "server" && releaseBranch {
+		cmds = append(cmds,
+			bk.Cmd(fmt.Sprintf("docker tag %s:%s %s:%s-insiders", image, version, image, branch)),
+			bk.Cmd(fmt.Sprintf("docker push %s:%s-insiders", image, branch)),
+		)
+	}
+
+	if insiders {
+		cmds = append(cmds,
+			bk.Cmd(fmt.Sprintf("docker tag %s:%s %s:insiders", image, version, image)),
+			bk.Cmd(fmt.Sprintf("docker push %s:insiders", image)),
+		)
+	}
+	pipeline.AddStep(":docker:", cmds...)
 }
 
 func (c config) isPR() bool {
@@ -209,8 +372,6 @@ func main() {
 			return
 		}
 	}
-
-	/////////////////////////////////////////////////// NEXT: HERE
 
 	if !isBextReleaseBranch {
 		pipeline.AddStep(":docker:",
@@ -372,6 +533,8 @@ func main() {
 		addDockerImageStep(branch[27:], false)
 		return
 	}
+
+	///////////////////////////////////////// NEXT: HERE
 
 	addBrowserExtensionReleaseSteps := func() {
 		for _, browser := range []string{"chrome", "firefox"} {
