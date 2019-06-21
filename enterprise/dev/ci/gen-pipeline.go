@@ -21,6 +21,113 @@ func init() {
 	}
 }
 
+type config struct {
+	branch            string
+	version           string
+	commit            string
+	mustIncludeCommit string
+
+	taggedRelease       bool
+	releaseBranch       bool
+	isBextReleaseBranch bool // TODO: rename browserExtRelease
+}
+
+func computeConfig() config {
+	branch := os.Getenv("BUILDKITE_BRANCH")
+	version := os.Getenv("BUILDKITE_TAG")
+	commit := os.Getenv("BUILDKITE_COMMIT")
+	if commit == "" {
+		commit = "1234567890123456789012345678901234567890" // for testing
+	}
+
+	taggedRelease := true // true if this is a tagged release
+	switch {
+	case strings.HasPrefix(branch, "docker-images-debug/"):
+		// A branch like "docker-images-debug/foobar" will produce Docker images
+		// tagged as "debug-foobar-$COMMIT".
+		version = fmt.Sprintf("debug-%s-%s", strings.TrimPrefix(branch, "docker-images-debug/"), commit)
+	case strings.HasPrefix(version, "v"):
+		// The Git tag "v1.2.3" should map to the Docker image "1.2.3" (without v prefix).
+		version = strings.TrimPrefix(version, "v")
+	default:
+		taggedRelease = false
+		buildNum, _ := strconv.Atoi(os.Getenv("BUILDKITE_BUILD_NUMBER"))
+		version = fmt.Sprintf("%05d_%s_%.7s", buildNum, now.Format("2006-01-02"), commit)
+	}
+
+	return config{
+		branch:            branch,
+		version:           version,
+		commit:            commit,
+		mustIncludeCommit: os.Getenv("MUST_INCLUDE_COMMIT"),
+
+		taggedRelease:       taggedRelease,
+		releaseBranch:       regexp.MustCompile(`^[0-9]+\.[0-9]+$`).MatchString(branch),
+		isBextReleaseBranch: branch == "bext/release",
+	}
+}
+
+func (c config) generate() (*bk.Pipeline, error) {
+	now := time.Now()
+
+	pipeline := &bk.Pipeline{}
+
+	// Common build steps
+	bk.OnEveryStepOpts = append(bk.OnEveryStepOpts,
+		bk.Env("GO111MODULE", "on"),
+		bk.Env("PUPPETEER_SKIP_CHROMIUM_DOWNLOAD", "true"),
+		bk.Env("FORCE_COLOR", "1"),
+		bk.Env("ENTERPRISE", "1"),
+		bk.Env("COMMIT_SHA", commit),
+		bk.Env("DATE", now.Format(time.RFC3339)),
+	)
+
+	if c.mustIncludeCommit != "" {
+		output, err := exec.Command("git", "merge-base", "--is-ancestor", c.mustIncludeCommit, "HEAD").CombinedOutput()
+		if err != nil {
+			fmt.Printf("This branch %s at commit %s does not include commit %s.\n", branch, commit, c.mustIncludeCommit)
+			fmt.Println("Rebase onto the latest master to get the latest CI fixes.")
+			fmt.Println(string(output))
+			return nil, err
+		}
+	}
+
+	if c.isPR() {
+		output, err := exec.Command("git", "diff", "--name-only", "origin/master...").Output()
+		if err != nil {
+			tput
+			panic(err)
+		}
+
+		onlyDocsChange := true
+		for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+			if !strings.HasPrefix(line, "doc") && line != "CHANGELOG.md" {
+				onlyDocsChange = false
+				break
+			}
+		}
+
+		if onlyDocsChange {
+			pipeline.AddStep(":memo:",
+				bk.Cmd("./dev/ci/yarn-run.sh prettier-check"),
+				bk.Cmd("./dev/check/docsite.sh"))
+			return
+		}
+	}
+
+	// TODO(2): write this
+	// TODO(3): break generate out
+}
+
+func (c config) isPR() bool {
+	return !isBextReleaseBranch &&
+		!c.releaseBranch &&
+		!c.taggedRelease &&
+		c.branch != "master" &&
+		!strings.HasPrefix(c.branch, "master-dry-run/") &&
+		!strings.HasPrefix(c.branch, "docker-images-patch/")
+}
+
 func main() {
 	pipeline := &bk.Pipeline{}
 
@@ -83,6 +190,7 @@ func main() {
 	if isPR {
 		output, err := exec.Command("git", "diff", "--name-only", "origin/master...").Output()
 		if err != nil {
+			tput
 			panic(err)
 		}
 
@@ -101,6 +209,8 @@ func main() {
 			return
 		}
 	}
+
+	/////////////////////////////////////////////////// NEXT: HERE
 
 	if !isBextReleaseBranch {
 		pipeline.AddStep(":docker:",
