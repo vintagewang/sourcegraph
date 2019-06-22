@@ -202,6 +202,7 @@
   },
   "dependencies": {
     "@hot-loader/react-dom": "^16.8.6",
+    "@primer/octicons-react": "^9.1.1",
     "@sentry/browser": "^5.4.0",
     "@slimsag/react-shortcuts": "^1.2.1",
     "@sourcegraph/codeintellify": "^6.2.1",

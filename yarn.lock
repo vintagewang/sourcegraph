@@ -1667,6 +1667,13 @@
   dependencies:
     esquery "^1.0.1"
 
+"@primer/octicons-react@^9.1.1":
+  version "9.1.1"
+  resolved "https://registry.npmjs.org/@primer/octicons-react/-/octicons-react-9.1.1.tgz#bee3d091c6ecc179c5e46d4716929b987b07baf7"
+  integrity sha512-+ZgALoxUOYUeEnqqN6ZqSfRP6LDRgfmErhY4ZIuGlw5Ocjj7AI87J68dD/wYqWl4IW7xE6rmLvpC3kU3iGmAfQ==
+  dependencies:
+    prop-types "^15.6.1"
+
 "@reach/router@^1.2.1":
   version "1.2.1"
   resolved "https://registry.npmjs.org/@reach/router/-/router-1.2.1.tgz#34ae3541a5ac44fa7796e5506a5d7274a162be4e"
