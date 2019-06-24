@@ -450,7 +450,8 @@ describe('e2e test suite', function(this: any): void {
 
         describe('hovers', () => {
             describe(`Blob`, () => {
-                test('gets displayed and updates URL when clicking on a token', async () => {
+                // tslint:disable-next-line:ban
+                test.only('gets displayed and updates URL when clicking on a token', async () => {
                     await driver.page.goto(
                         baseURL + '/github.com/gorilla/mux@15a353a636720571d19e37b34a14499c3afa9991/-/blob/mux.go'
                     )
