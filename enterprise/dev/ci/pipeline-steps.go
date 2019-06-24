@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	bk "github.com/sourcegraph/sourcegraph/pkg/buildkite"
@@ -196,4 +198,70 @@ func addBrowserExtensionReleaseSteps(pipeline *bk.Pipeline) {
 
 func wait(pipeline *bk.Pipeline) {
 	pipeline.AddWait()
+}
+
+type dockerImageConfig struct {
+	config
+	app      string
+	insiders bool
+}
+
+func (c dockerImageConfig) generate(pipeline *bk.Pipeline) {
+	cmds := []bk.StepOpt{
+		bk.Cmd(fmt.Sprintf(`echo "Building %s..."`, c.app)),
+	}
+
+	cmdDir := "cmd/" + c.app
+	if _, err := os.Stat(filepath.Join("enterprise", cmdDir)); err != nil {
+		fmt.Fprintf(os.Stderr, "github.com/sourcegraph/sourcegraph/enterprise/cmd/%s does not exist so building github.com/sourcegraph/sourcegraph/cmd/%s instead\n", c.app, c.app)
+	} else {
+		cmds = append(cmds, bk.Cmd("pushd enterprise"))
+	}
+
+	preBuildScript := cmdDir + "/pre-build.sh"
+	if _, err := os.Stat(preBuildScript); err == nil {
+		cmds = append(cmds, bk.Cmd(preBuildScript))
+	}
+
+	image := "sourcegraph/" + c.app
+
+	getBuildScript := func() string {
+		buildScriptByApp := map[string]string{
+			"symbols": "env BUILD_TYPE=dist ./cmd/symbols/build.sh buildSymbolsDockerImage",
+
+			// The server image was built prior to e2e tests in a previous step.
+			"server": fmt.Sprintf("docker tag %s:%s_candidate %s:%s", image, c.version, image, c.version),
+		}
+		if buildScript, ok := buildScriptByApp[c.app]; ok {
+			return buildScript
+		}
+		return cmdDir + "/build.sh"
+	}
+
+	cmds = append(cmds,
+		bk.Env("IMAGE", image+":"+c.version),
+		bk.Env("VERSION", c.version),
+		bk.Cmd(getBuildScript()),
+	)
+
+	if c.app != "server" || c.taggedRelease {
+		cmds = append(cmds,
+			bk.Cmd(fmt.Sprintf("docker push %s:%s", image, c.version)),
+		)
+	}
+
+	if c.app == "server" && c.releaseBranch {
+		cmds = append(cmds,
+			bk.Cmd(fmt.Sprintf("docker tag %s:%s %s:%s-insiders", image, c.version, image, c.branch)),
+			bk.Cmd(fmt.Sprintf("docker push %s:%s-insiders", image, c.branch)),
+		)
+	}
+
+	if c.insiders {
+		cmds = append(cmds,
+			bk.Cmd(fmt.Sprintf("docker tag %s:%s %s:insiders", image, c.version, image)),
+			bk.Cmd(fmt.Sprintf("docker push %s:insiders", image)),
+		)
+	}
+	pipeline.AddStep(":docker:", cmds...)
 }
