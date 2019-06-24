@@ -206,7 +206,7 @@ export class SearchResults extends React.Component<SearchResultsProps, SearchRes
                     )}
                     <SearchResultsList
                         {...this.props}
-                        className="flex-1"
+                        className="search-results__list"
                         resultsOrError={this.state.resultsOrError}
                         onShowMoreResultsClick={this.showMoreResults}
                         onExpandAllResultsToggle={this.onExpandAllResultsToggle}
