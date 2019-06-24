@@ -1,0 +1,19 @@
+- add*
+  - e.g., addLint
+- generate(c config) (*bk.Pipeline, error)
+- main
+
+
+
+
+func addBuildDockerImage(c config, app string, insiders bool) func(*bk.Pipeline) {
+  return func(pipeline *bk.Pipeline) {
+    // TODO
+  }
+}
+
+func addBuildDockerImages(c config) func(*bk.Pipeline) {
+  return func(pipeline *bk.Pipeline) {
+    // TODO
+  }
+}
