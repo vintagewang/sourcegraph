@@ -22,6 +22,7 @@ func init() {
 }
 
 type config struct {
+	now               time.Time
 	branch            string
 	version           string
 	commit            string
@@ -29,10 +30,79 @@ type config struct {
 
 	taggedRelease       bool
 	releaseBranch       bool
-	isBextReleaseBranch bool // TODO: rename browserExtRelease
+	isBextReleaseBranch bool
+	patch               bool
+	patchNoTest         bool
+}
+
+type dockerImageConfig struct {
+	config
+	app      string
+	insiders bool
+}
+
+func (c dockerImageConfig) generate(pipeline *bk.Pipeline) {
+	cmds := []bk.StepOpt{
+		bk.Cmd(fmt.Sprintf(`echo "Building %s..."`, c.app)),
+	}
+
+	cmdDir := "cmd/" + c.app
+	if _, err := os.Stat(filepath.Join("enterprise", cmdDir)); err != nil {
+		fmt.Fprintf(os.Stderr, "github.com/sourcegraph/sourcegraph/enterprise/cmd/%s does not exist so building github.com/sourcegraph/sourcegraph/cmd/%s instead\n", c.app, c.app)
+	} else {
+		cmds = append(cmds, bk.Cmd("pushd enterprise"))
+	}
+
+	preBuildScript := cmdDir + "/pre-build.sh"
+	if _, err := os.Stat(preBuildScript); err == nil {
+		cmds = append(cmds, bk.Cmd(preBuildScript))
+	}
+
+	image := "sourcegraph/" + c.app
+
+	getBuildScript := func() string {
+		buildScriptByApp := map[string]string{
+			"symbols": "env BUILD_TYPE=dist ./cmd/symbols/build.sh buildSymbolsDockerImage",
+
+			// The server image was built prior to e2e tests in a previous step.
+			"server": fmt.Sprintf("docker tag %s:%s_candidate %s:%s", image, c.version, image, c.version),
+		}
+		if buildScript, ok := buildScriptByApp[c.app]; ok {
+			return buildScript
+		}
+		return cmdDir + "/build.sh"
+	}
+
+	cmds = append(cmds,
+		bk.Env("IMAGE", image+":"+c.version),
+		bk.Env("VERSION", c.version),
+		bk.Cmd(getBuildScript()),
+	)
+
+	if c.app != "server" || c.taggedRelease {
+		cmds = append(cmds,
+			bk.Cmd(fmt.Sprintf("docker push %s:%s", image, c.version)),
+		)
+	}
+
+	if c.app == "server" && c.releaseBranch {
+		cmds = append(cmds,
+			bk.Cmd(fmt.Sprintf("docker tag %s:%s %s:%s-insiders", image, c.version, image, c.branch)),
+			bk.Cmd(fmt.Sprintf("docker push %s:%s-insiders", image, c.branch)),
+		)
+	}
+
+	if c.insiders {
+		cmds = append(cmds,
+			bk.Cmd(fmt.Sprintf("docker tag %s:%s %s:insiders", image, c.version, image)),
+			bk.Cmd(fmt.Sprintf("docker push %s:insiders", image)),
+		)
+	}
+	pipeline.AddStep(":docker:", cmds...)
 }
 
 func computeConfig() config {
+	now := time.Now()
 	branch := os.Getenv("BUILDKITE_BRANCH")
 	version := os.Getenv("BUILDKITE_TAG")
 	commit := os.Getenv("BUILDKITE_COMMIT")
@@ -55,7 +125,14 @@ func computeConfig() config {
 		version = fmt.Sprintf("%05d_%s_%.7s", buildNum, now.Format("2006-01-02"), commit)
 	}
 
+	patchNoTest := strings.HasPrefix(branch, "docker-images-patch-notest/")
+	patch := strings.HasPrefix(branch, "docker-images-patch/")
+	if patchNoTest || patch {
+		version = version + "_patch"
+	}
+
 	return config{
+		now:               now,
 		branch:            branch,
 		version:           version,
 		commit:            commit,
@@ -64,351 +141,85 @@ func computeConfig() config {
 		taggedRelease:       taggedRelease,
 		releaseBranch:       regexp.MustCompile(`^[0-9]+\.[0-9]+$`).MatchString(branch),
 		isBextReleaseBranch: branch == "bext/release",
+		patch:               patch,
+		patchNoTest:         patchNoTest,
 	}
 }
 
-var allDockerImages = []string{
-	"frontend",
-	"github-proxy",
-	"gitserver",
-	"management-console",
-	"query-runner",
-	"repo-updater",
-	"searcher",
-	"server",
-	"symbols",
-}
-
 func (c config) generate() (*bk.Pipeline, error) {
-	pipeline := &bk.Pipeline{}
-
-	// Common build steps
-	now := time.Now()
-	bk.OnEveryStepOpts = append(bk.OnEveryStepOpts,
-		bk.Env("GO111MODULE", "on"),
-		bk.Env("PUPPETEER_SKIP_CHROMIUM_DOWNLOAD", "true"),
-		bk.Env("FORCE_COLOR", "1"),
-		bk.Env("ENTERPRISE", "1"),
-		bk.Env("COMMIT_SHA", commit),
-		bk.Env("DATE", now.Format(time.RFC3339)),
-	)
-
 	if c.mustIncludeCommit != "" {
 		output, err := exec.Command("git", "merge-base", "--is-ancestor", c.mustIncludeCommit, "HEAD").CombinedOutput()
 		if err != nil {
-			fmt.Printf("This branch %s at commit %s does not include commit %s.\n", branch, commit, c.mustIncludeCommit)
+			fmt.Printf("This branch %s at commit %s does not include commit %s.\n", c.branch, c.commit, c.mustIncludeCommit)
 			fmt.Println("Rebase onto the latest master to get the latest CI fixes.")
 			fmt.Println(string(output))
 			return nil, err
 		}
 	}
 
-	if c.isPR() {
-		output, err := exec.Command("git", "diff", "--name-only", "origin/master...").Output()
-		if err != nil {
-			return nil, err
-		}
+	pipeline := &bk.Pipeline{}
 
-		onlyDocsChange := true
-		for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-			if !strings.HasPrefix(line, "doc") && line != "CHANGELOG.md" {
-				onlyDocsChange = false
-				break
-			}
-		}
+	// Common build env
+	bk.OnEveryStepOpts = append(bk.OnEveryStepOpts,
+		bk.Env("GO111MODULE", "on"),
+		bk.Env("PUPPETEER_SKIP_CHROMIUM_DOWNLOAD", "true"),
+		bk.Env("FORCE_COLOR", "1"),
+		bk.Env("ENTERPRISE", "1"),
+		bk.Env("COMMIT_SHA", c.commit),
+		bk.Env("DATE", c.now.Format(time.RFC3339)),
+	)
 
-		// Only docs change (short circuit)
-		if onlyDocsChange {
-			c.generateDocsOnly(pipeline)
-			return
-		}
-	}
-
-	if !c.isBextReleaseBranch {
-		c.generateBuildServerDockerImage(pipeline)
-		c.generateCheck(pipeline)
-	}
-	c.generateLint(pipeline)
-	c.generateBuildBrowserExt(pipeline)
-	if !isBextReleaseBranch {
-		c.generateBuildWebApp(pipeline)
-	}
-	c.generateSharedTests(pipeline)
-	if !isBextReleaseBranch {
-		c.generatePostgresBackcompatTest(pipeline)
-		c.genearteGoTests(pipeline)
-		c.generateGoBuild(pipeline)
-		c.generateDockerfileLint(pipeline)
-	}
-
-	pipeline.AddWait()
-
-	if !isBextReleaseBranch {
-		c.generateE2ETest(pipeline)
-	}
-
-	pipeline.AddWait()
-
-	c.generateCodeCov(pipeline)
-	if strings.HasPrefix(branch, "docker-images-patch-notest/") {
-		version = version + "_patch"
-		c.addDockerImageStep(pipeline, branch[27:], false)
-		return
-	}
-
-	if c.isBextReleaseBranch {
-		c.addBrowserExtensionReleaseSteps()
-		return
-	}
-
-	pipeline.AddWait()
-
-	// Docker build steps
+	// Generate pipeline steps
+	var pipelineOperations []func(*bk.Pipeline)
 	switch {
-	case c.taggedRelease:
-		for _, dockerImage := range allDockerImages {
-			c.addDockerImageStep(dockerImage, false)
+	case c.isPR() && isDocsOnly():
+		pipelineOperations = []func(*bk.Pipeline){
+			generateDocsOnly,
 		}
-		pipeline.AddWait()
-	case c.releaseBranch:
-		c.addDockerImageStep("server", false)
-		pipeline.AddWait()
-	case c.branch == "master":
-		for _, dockerImage := range allDockerImages {
-			c.addDockerImageStep(dockerImage, true)
+	case c.patchNoTest:
+		pipelineOperations = []func(*bk.Pipeline){
+			dockerImageConfig{config: c, app: c.branch[27:], insiders: false}.generate,
 		}
-		pipeline.AddWait()
-	case strings.HasPrefix(c.branch, "master-dry-run/"): // replicates `master` build but does not deploy
-		for _, dockerImage := range allDockerImages {
-			c.addDockerImageStep(dockerImage, true)
+	case c.isBextReleaseBranch:
+		pipelineOperations = []func(*bk.Pipeline){
+			generateLint,
+			generateBuildBrowserExt,
+			generateSharedTests,
+			wait,
+			generateCodeCov,
+			addBrowserExtensionReleaseSteps,
 		}
-		pipeline.AddWait()
-
-		// case strings.HasPrefix(c.branch, "docker-images-patch/"):
-		// 	version = c.version + "_patch"
-		// 	addDockerImageStep(branch[20:], false)
-		// 	pipeline.AddWait()
-	}
-
-	// Clean up to help avoid running out of disk.
-	c.generateCleanup(pipeline)
-}
-
-func (c config) generateDocsOnly(pipeline *bk.Pipeline) {
-	pipeline.AddStep(":memo:",
-		bk.Cmd("./dev/ci/yarn-run.sh prettier-check"),
-		bk.Cmd("./dev/check/docsite.sh"))
-}
-
-func (c config) generateCheck(pipeline *bk.Pipeline) {
-	pipeline.AddStep(":white_check_mark:", bk.Cmd("./dev/check/all.sh"))
-}
-
-// Lint checks
-func (c config) generateLint(pipeline *bk.Pipeline, docsOnly bool) {
-	pipeline.AddStep(":lipstick: :lint-roller: :stylelint: :typescript: :graphql:",
-		bk.Cmd("dev/ci/yarn-run.sh prettier-check all:tslint-eslint all:stylelint all:typecheck graphql-lint"))
-}
-
-// Build Sourcegraph Server Docker image
-func (c config) generateBuildServerDockerImage(pipeline *bk.Pipeline) {
-	pipeline.AddStep(":docker:",
-		bk.Cmd("pushd enterprise"),
-		bk.Cmd("./cmd/server/pre-build.sh"),
-		bk.Env("IMAGE", "sourcegraph/server:"+version+"_candidate"),
-		bk.Env("VERSION", version),
-		bk.Cmd("./cmd/server/build.sh"),
-		bk.Cmd("popd"))
-}
-
-func (c config) generateBuildWebApp(pipeline *bk.Pipeline) {
-	// Webapp build
-	pipeline.AddStep(":webpack::globe_with_meridians:",
-		bk.Cmd("dev/ci/yarn-build.sh web"),
-		bk.Env("NODE_ENV", "production"),
-		bk.Env("ENTERPRISE", "0"))
-
-	// Webapp enterprise build
-	pipeline.AddStep(":webpack::globe_with_meridians::moneybag:",
-		bk.Cmd("dev/ci/yarn-build.sh web"),
-		bk.Env("NODE_ENV", "production"),
-		bk.Env("ENTERPRISE", "1"))
-
-	// Webapp tests
-	pipeline.AddStep(":jest::globe_with_meridians:",
-		bk.Cmd("dev/ci/yarn-test.sh web"),
-		bk.ArtifactPaths("web/coverage/coverage-final.json"))
-}
-
-func (c config) generateBuildBrowserExt(pipeline *bk.Pipeline) {
-	// Browser extension build
-	pipeline.AddStep(":webpack::chrome:",
-		bk.Cmd("dev/ci/yarn-build.sh browser"))
-
-	// Browser extension tests
-	pipeline.AddStep(":jest::chrome:",
-		bk.Cmd("dev/ci/yarn-test.sh browser"),
-		bk.ArtifactPaths("browser/coverage/coverage-final.json"))
-}
-
-func (c config) generateSharedTests(pipeline *bk.Pipeline) {
-	// Shared tests
-	pipeline.AddStep(":jest:",
-		bk.Cmd("dev/ci/yarn-test.sh shared"),
-		bk.ArtifactPaths("shared/coverage/coverage-final.json"))
-
-	// Storybook
-	pipeline.AddStep(":storybook:", bk.Cmd("dev/ci/yarn-run.sh storybook:smoke-test"))
-}
-
-func (c config) generatePostgresBackcompatTest(pipeline *bk.Pipeline) {
-	pipeline.AddStep(":postgres:",
-		bk.Cmd("./dev/ci/ci-db-backcompat.sh"))
-}
-
-func (c config) generateGoTests(pipeline *bk.Pipeline) {
-	pipeline.AddStep(":go:",
-		bk.Cmd("./cmd/symbols/build.sh buildLibsqlite3Pcre"), // for symbols tests
-		bk.Cmd("go test -timeout 4m -coverprofile=coverage.txt -covermode=atomic -race ./..."),
-		bk.ArtifactPaths("coverage.txt"))
-}
-
-func (c config) generateGoBuild(pipeline *bk.Pipeline) {
-	pipeline.AddStep(":go:",
-		bk.Cmd("go generate ./..."),
-		bk.Cmd("go install -tags dist ./cmd/... ./enterprise/cmd/..."),
-	)
-}
-
-func (c config) generateDockerfileLint(pipeline *bk.Pipeline) {
-	pipeline.AddStep(":docker:",
-		bk.Cmd("curl -sL -o hadolint \"https://github.com/hadolint/hadolint/releases/download/v1.15.0/hadolint-$(uname -s)-$(uname -m)\" && chmod 700 hadolint"),
-		bk.Cmd("git ls-files | grep Dockerfile | xargs ./hadolint"))
-}
-
-func (c config) generateE2ETest(pipeline *bk.Pipeline) {
-	pipeline.AddStep(":chromium:",
-		// Avoid crashing the sourcegraph/server containers. See
-		// https://github.com/sourcegraph/sourcegraph/issues/2657
-		bk.ConcurrencyGroup("e2e"),
-		bk.Concurrency(1),
-
-		bk.Env("IMAGE", "sourcegraph/server:"+c.version+"_candidate"),
-		bk.Env("VERSION", c.version),
-		bk.Env("PUPPETEER_SKIP_CHROMIUM_DOWNLOAD", ""),
-		bk.Cmd("./dev/ci/e2e.sh"),
-		bk.ArtifactPaths("./puppeteer/*.png;./web/e2e.mp4;./web/ffmpeg.log"))
-}
-
-func (c config) generateCodeCov(pipeline *bk.Pipeline) {
-	pipeline.AddStep(":codecov:",
-		bk.Cmd("buildkite-agent artifact download 'coverage.txt' . || true"), // ignore error when no report exists
-		bk.Cmd("buildkite-agent artifact download '*/coverage-final.json' . || true"),
-		bk.Cmd("bash <(curl -s https://codecov.io/bash) -X gcov -X coveragepy -X xcode"))
-}
-
-func (c config) generateCleanup(pipeline *bk.Pipeline) {
-	pipeline.AddStep(":sparkles:",
-		bk.Cmd("docker image rm -f sourcegraph/server:"+c.version+"_candidate"))
-}
-
-///////////////////////////////
-
-func (c config) addDockerImageStep(pipeline *bk.Pipeline, app string, insiders bool) {
-	cmds := []bk.StepOpt{
-		bk.Cmd(fmt.Sprintf(`echo "Building %s..."`, app)),
-	}
-
-	cmdDir := "cmd/" + app
-	if _, err := os.Stat(filepath.Join("enterprise", cmdDir)); err != nil {
-		fmt.Fprintf(os.Stderr, "github.com/sourcegraph/sourcegraph/enterprise/cmd/%s does not exist so building github.com/sourcegraph/sourcegraph/cmd/%s instead\n", app, app)
-	} else {
-		cmds = append(cmds, bk.Cmd("pushd enterprise"))
-	}
-
-	preBuildScript := cmdDir + "/pre-build.sh"
-	if _, err := os.Stat(preBuildScript); err == nil {
-		cmds = append(cmds, bk.Cmd(preBuildScript))
-	}
-
-	image := "sourcegraph/" + app
-
-	getBuildScript := func() string {
-		buildScriptByApp := map[string]string{
-			"symbols": "env BUILD_TYPE=dist ./cmd/symbols/build.sh buildSymbolsDockerImage",
-			// The server image was built prior to e2e tests in a previous step.
-			"server": fmt.Sprintf("docker tag %s:%s_candidate %s:%s", image, c.version, image, c.version),
+	default:
+		pipelineOperations = []func(*bk.Pipeline){
+			c.generateBuildServerDockerImage,
+			generateCheck,
+			generateLint,
+			generateBuildBrowserExt,
+			generateBuildWebApp,
+			generateSharedTests,
+			generatePostgresBackcompatTest,
+			generateGoTests,
+			generateGoBuild,
+			generateDockerfileLint,
+			wait,
+			c.generateE2ETest,
+			wait,
+			generateCodeCov,
+			wait,
+			c.generateDockerBuilds,
+			c.generateCleanup, // TODO: cleanup Docker build -- can roll this into something else?
 		}
-		if buildScript, ok := buildScriptByApp[app]; ok {
-			return buildScript
-		}
-		return cmdDir + "/build.sh"
 	}
 
-	cmds = append(cmds,
-		bk.Env("IMAGE", image+":"+c.version),
-		bk.Env("VERSION", c.version),
-		bk.Cmd(getBuildScript()),
-	)
-
-	if app != "server" || taggedRelease {
-		cmds = append(cmds,
-			bk.Cmd(fmt.Sprintf("docker push %s:%s", image, c.version)),
-		)
+	for _, p := range pipelineOperations {
+		p(pipeline)
 	}
 
-	if app == "server" && releaseBranch {
-		cmds = append(cmds,
-			bk.Cmd(fmt.Sprintf("docker tag %s:%s %s:%s-insiders", image, c.version, image, c.branch)),
-			bk.Cmd(fmt.Sprintf("docker push %s:%s-insiders", image, c.branch)),
-		)
-	}
-
-	if insiders {
-		cmds = append(cmds,
-			bk.Cmd(fmt.Sprintf("docker tag %s:%s %s:insiders", image, c.version, image)),
-			bk.Cmd(fmt.Sprintf("docker push %s:insiders", image)),
-		)
-	}
-	pipeline.AddStep(":docker:", cmds...)
-}
-
-func (c config) addBrowserExtensionReleaseSteps(pipeline *bk.Pipeline) {
-	for _, browser := range []string{"chrome", "firefox"} {
-		// Run e2e tests
-		pipeline.AddStep(fmt.Sprintf(":%s:", browser),
-			bk.Env("PUPPETEER_SKIP_CHROMIUM_DOWNLOAD", ""),
-			bk.Env("E2E_BROWSER", browser),
-			bk.Cmd("yarn --frozen-lockfile --network-timeout 60000"),
-			bk.Cmd("pushd browser"),
-			bk.Cmd("yarn -s run build"),
-			bk.Cmd("yarn -s run test-e2e"),
-			bk.Cmd("popd"),
-			bk.ArtifactPaths("./puppeteer/*.png"))
-	}
-
-	pipeline.AddWait()
-
-	// Release to the Chrome Webstore
-	pipeline.AddStep(":rocket::chrome:",
-		bk.Env("FORCE_COLOR", "1"),
-		bk.Cmd("yarn --frozen-lockfile --network-timeout 60000"),
-		bk.Cmd("pushd browser"),
-		bk.Cmd("yarn -s run build"),
-		bk.Cmd("yarn release:chrome"),
-		bk.Cmd("popd"))
-
-	// Build and self sign the FF extension and upload it to ...
-	pipeline.AddStep(":rocket::firefox:",
-		bk.Env("FORCE_COLOR", "1"),
-		bk.Cmd("yarn --frozen-lockfile --network-timeout 60000"),
-		bk.Cmd("pushd browser"),
-		bk.Cmd("yarn release:ff"),
-		bk.Cmd("popd"))
+	return pipeline, nil
 }
 
 func (c config) isPR() bool {
-	return !isBextReleaseBranch &&
+	return !c.isBextReleaseBranch &&
 		!c.releaseBranch &&
 		!c.taggedRelease &&
 		c.branch != "master" &&
@@ -416,7 +227,28 @@ func (c config) isPR() bool {
 		!strings.HasPrefix(c.branch, "docker-images-patch/")
 }
 
+func isDocsOnly() bool {
+	output, err := exec.Command("git", "diff", "--name-only", "origin/master...").Output()
+	if err != nil {
+		panic(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if !strings.HasPrefix(line, "doc") && line != "CHANGELOG.md" {
+			return false
+		}
+	}
+	return true
+}
+
 func main() {
+	pipeline, err := computeConfig().generate()
+	if err != nil {
+		panic(err)
+	}
+	_, err = pipeline.WriteTo(os.Stdout)
+	if err != nil {
+		panic(err)
+	}
 
 	// pipeline := &bk.Pipeline{}
 
@@ -479,7 +311,6 @@ func main() {
 	// if isPR {
 	// 	output, err := exec.Command("git", "diff", "--name-only", "origin/master...").Output()
 	// 	if err != nil {
-	// 		tput
 	// 		panic(err)
 	// 	}
 
