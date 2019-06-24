@@ -159,6 +159,44 @@ func (s *repos) getBySQL(ctx context.Context, querySuffix *sqlf.Query) ([]*types
 	return authzFilter(ctx, repos, authz.Read)
 }
 
+const getRepoByQueryFmtstrHack = `
+SELECT id, name, external_id, external_service_type, external_service_id
+FROM repo
+WHERE deleted_at IS NULL AND enabled = true AND %s`
+
+func (s *repos) getBySQLHack(ctx context.Context, querySuffix *sqlf.Query) ([]*types.Repo, error) {
+	q := sqlf.Sprintf(getRepoByQueryFmtstrHack, querySuffix)
+	rows, err := dbconn.Global.QueryContext(ctx, q.Query(sqlf.PostgresBindVar), q.Args()...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var repos []*types.Repo
+	for rows.Next() {
+		var repo types.Repo
+		var spec dbExternalRepoSpec
+
+		if err := rows.Scan(
+			&repo.ID,
+			&repo.Name,
+			&spec.id, &spec.serviceType, &spec.serviceID,
+		); err != nil {
+			return nil, err
+		}
+
+		repo.ExternalRepo = spec.toAPISpec()
+
+		repos = append(repos, &repo)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// 🚨 SECURITY: This enforces repository permissions
+	return authzFilter(ctx, repos, authz.Read)
+}
+
 // ReposListOptions specifies the options for listing repositories.
 //
 // Query and IncludePatterns/ExcludePatterns may not be used together.
@@ -269,6 +307,32 @@ func (s *repos) List(ctx context.Context, opt ReposListOptions) (results []*type
 	fetchSQL := sqlf.Sprintf("%s %s %s", sqlf.Join(conds, "AND"), opt.OrderBy.SQL(), opt.LimitOffset.SQL())
 	tr.LazyPrintf("SQL query: %s, SQL args: %v", fetchSQL.Query(sqlf.PostgresBindVar), fetchSQL.Args())
 	rawRepos, err := s.getBySQL(ctx, fetchSQL)
+	if err != nil {
+		return nil, err
+	}
+	return rawRepos, nil
+}
+
+func (s *repos) ListHack(ctx context.Context, opt ReposListOptions) (results []*types.Repo, err error) {
+	tr, ctx := trace.New(ctx, "repos.ListHack", "")
+	defer func() {
+		tr.SetError(err)
+		tr.Finish()
+	}()
+
+	if Mocks.Repos.List != nil {
+		return Mocks.Repos.List(ctx, opt)
+	}
+
+	conds, err := s.listSQL(opt)
+	if err != nil {
+		return nil, err
+	}
+
+	// fetch matching repos
+	fetchSQL := sqlf.Sprintf("%s %s %s", sqlf.Join(conds, "AND"), opt.OrderBy.SQL(), opt.LimitOffset.SQL())
+	tr.LazyPrintf("SQL query: %s, SQL args: %v", fetchSQL.Query(sqlf.PostgresBindVar), fetchSQL.Args())
+	rawRepos, err := s.getBySQLHack(ctx, fetchSQL)
 	if err != nil {
 		return nil, err
 	}

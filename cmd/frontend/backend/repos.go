@@ -176,7 +176,7 @@ func (s *repos) List(ctx context.Context, opt db.ReposListOptions) (repos []*typ
 		return item.Repos, nil
 	}
 
-	repos, err = db.Repos.List(ctx, opt)
+	repos, err = db.Repos.ListHack(ctx, opt)
 	if err != nil {
 		return nil, err
 	}
